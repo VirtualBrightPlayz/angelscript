@@ -1240,6 +1240,8 @@ int asCCompiler::CompileGlobalVariable(asCBuilder *in_builder, asCScriptCode *in
 	if( in_gvar->property == 0 )
 	{
 		in_gvar->property = builder->module->AllocateGlobalProperty(in_gvar->name.AddressOf(), in_gvar->datatype, in_gvar->ns);
+		in_gvar->property->isSerialize = in_gvar->isSerialize;
+		in_gvar->property->isShared = in_gvar->isShared;
 		in_gvar->index = in_gvar->property->id;
 	}
 
@@ -1308,6 +1310,11 @@ int asCCompiler::CompileGlobalVariable(asCBuilder *in_builder, asCScriptCode *in
 void asCCompiler::DetermineSingleFunc(asCExprContext *ctx, asCScriptNode *node)
 {
 	// Don't do anything if this is not a deferred global function
+	if( ctx->IsLambda() )
+	{
+		ImplicitConvLambdaToNewFunc(ctx, node, EImplicitConv::asIC_IMPLICIT_CONV, true);
+	}
+
 	if( !ctx->IsGlobalFunc() )
 		return;
 
@@ -1441,7 +1448,7 @@ void asCCompiler::CompileInitAsCopy(asCDataType &dt, int offset, asCByteCode *bc
 int asCCompiler::PrepareArgument(asCDataType *paramType, asCExprContext *ctx, asCScriptNode *node, bool isFunction, int refType, bool isMakingCopy)
 {
 	asCDataType param = *paramType;
-	if( paramType->GetTokenType() == ttQuestion )
+	if( paramType->GetTokenType() == ttQuestion || paramType->GetTokenType() == ttFunction )
 	{
 		// The function is expecting a var type. If the argument is a function name, we must now decide which function it is
 		DetermineSingleFunc(ctx, node);
@@ -1483,7 +1490,7 @@ int asCCompiler::PrepareArgument(asCDataType *paramType, asCExprContext *ctx, as
 				return -1;
 
 			// Add the type id as hidden arg if the parameter is a ? type
-			if( paramType->GetTokenType() == ttQuestion )
+			if( paramType->GetTokenType() == ttQuestion || paramType->GetTokenType() == ttFunction )
 			{
 				asCByteCode tmpBC(engine);
 
@@ -1659,7 +1666,7 @@ int asCCompiler::PrepareArgument(asCDataType *paramType, asCExprContext *ctx, as
 					// When calling a function expecting a var arg with a parameter received as reference to handle
 					// then it is necessary to copy the handle to a local variable, otherwise MoveArgsToStack will
 					// not be able to do the correct double dereference to put the reference to the object on the stack.
-					if (paramType->GetTokenType() == ttQuestion && !param.IsObjectHandle() && ctx->type.isVariable)
+					if ((paramType->GetTokenType() == ttQuestion || paramType->GetTokenType() == ttFunction) && !param.IsObjectHandle() && ctx->type.isVariable)
 					{
 						sVariable *var = variables->GetVariableByOffset(ctx->type.stackOffset);
 						if (var && var->type.IsReference() && var->type.IsObjectHandle())
@@ -1701,7 +1708,7 @@ int asCCompiler::PrepareArgument(asCDataType *paramType, asCExprContext *ctx, as
 		else if( refType == asTM_OUTREF )
 		{
 			// Add the type id as hidden arg if the parameter is a ? type
-			if( paramType->GetTokenType() == ttQuestion )
+			if( paramType->GetTokenType() == ttQuestion || paramType->GetTokenType() == ttFunction )
 			{
 				asCByteCode tmpBC(engine);
 
@@ -1771,7 +1778,7 @@ int asCCompiler::PrepareArgument(asCDataType *paramType, asCExprContext *ctx, as
 				return -1;
 
 			// Add the type id as hidden arg if the parameter is a ? type
-			if( paramType->GetTokenType() == ttQuestion )
+			if( paramType->GetTokenType() == ttQuestion || paramType->GetTokenType() == ttFunction )
 			{
 				asCByteCode tmpBC(engine);
 
@@ -1931,7 +1938,7 @@ int asCCompiler::PrepareArgument(asCDataType *paramType, asCExprContext *ctx, as
 	}
 
 	// Don't put any pointer on the stack yet
-	if( param.IsReference() || ((param.IsObject() || param.IsFuncdef()) && !param.IsNullHandle()) )
+	if( param.IsReference() || ((param.IsObject() || param.IsFuncdef() || param.GetTokenType() == ttFunction) && !param.IsNullHandle()) )
 	{
 		// &inout parameter may leave the reference on the stack already
 		// references considered safe too, i.e. when the life time is known
@@ -2047,7 +2054,7 @@ void asCCompiler::MoveArgsToStack(int funcId, asCByteCode *bc, asCArray<asCExprC
 				// need to do anything else
 				if (!args[n]->type.isRefSafe)
 				{
-					if (descr->parameterTypes[n].GetTokenType() == ttQuestion &&
+					if ((descr->parameterTypes[n].GetTokenType() == ttQuestion || descr->parameterTypes[n].GetTokenType() == ttFunction) &&
 						(args[n]->type.dataType.IsObject() || args[n]->type.dataType.IsFuncdef()) &&
 						!args[n]->type.dataType.IsObjectHandle())
 					{
@@ -2060,7 +2067,7 @@ void asCCompiler::MoveArgsToStack(int funcId, asCByteCode *bc, asCArray<asCExprC
 						else
 							bc->InstrWORD(asBC_GETOBJREF, (asWORD)offset);
 					}
-					else if (descr->parameterTypes[n].GetTokenType() == ttQuestion &&
+					else if ((descr->parameterTypes[n].GetTokenType() == ttQuestion || descr->parameterTypes[n].GetTokenType() == ttFunction) &&
 						args[n]->type.dataType.IsObjectHandle() && !args[n]->type.isExplicitHandle)
 					{
 						// The object handle is being passed as an object, so dereference it before
@@ -3694,7 +3701,7 @@ int asCCompiler::CompileInitListElement(asSListPatternNode *&patternNode, asCScr
 				// Compile the assignment expression
 				CompileAssignment(valueNode, &rctx);
 
-				if( dt.GetTokenType() == ttQuestion )
+				if( dt.GetTokenType() == ttQuestion || dt.GetTokenType() == ttFunction )
 				{
 					// Make sure the type is not ambiguous
 					DetermineSingleFunc(&rctx, valueNode);
@@ -3719,7 +3726,7 @@ int asCCompiler::CompileInitListElement(asSListPatternNode *&patternNode, asCScr
 			}
 			else if( valueNode->nodeType == snInitList )
 			{
-				if( dt.GetTokenType() == ttQuestion )
+				if( dt.GetTokenType() == ttQuestion || dt.GetTokenType() == ttFunction )
 				{
 					// Can't use init lists with var type as it is not possible to determine what type should be allocated
 					asCString str;
@@ -3804,7 +3811,8 @@ int asCCompiler::CompileInitListElement(asSListPatternNode *&patternNode, asCScr
 				// Don't add any code to assign a null handle. RefCpy doesn't work without a known type.
 				// The buffer is already initialized to zero in asBC_AllocMem anyway.
 				asASSERT( rctx.bc.GetLastInstr() == asBC_PshNull );
-				asASSERT( reinterpret_cast<asSListPatternDataTypeNode*>(patternNode)->dataType.GetTokenType() == ttQuestion );
+				eTokenType tokenType = reinterpret_cast<asSListPatternDataTypeNode*>(patternNode)->dataType.GetTokenType();
+				asASSERT( tokenType == ttQuestion || tokenType == ttFunction );
 			}
 			else
 			{
@@ -3832,7 +3840,7 @@ int asCCompiler::CompileInitListElement(asSListPatternNode *&patternNode, asCScr
 			else
 			{
 				// There is no specific value so we need to fill it with a default value
-				if( dt.GetTokenType() == ttQuestion )
+				if( dt.GetTokenType() == ttQuestion || dt.GetTokenType() == ttFunction )
 				{
 					// Values on the list must be aligned to 32bit boundaries, except if the type is smaller than 32bit.
 					if( bufferSize & 0x3 )
@@ -3981,7 +3989,7 @@ void asCCompiler::CompileStatement(asCScriptNode *statement, bool *hasReturn, as
 		asASSERT(false);
 }
 
-void asCCompiler::CompileSwitchStatement(asCScriptNode *snode, bool *, asCByteCode *bc)
+void asCCompiler::CompileSwitchStatement(asCScriptNode *snode, bool *hasReturn, asCByteCode *bc)
 {
 	// TODO: inheritance: Must guarantee that all options in the switch case call a constructor, or that none call it.
 
@@ -4101,8 +4109,12 @@ void asCCompiler::CompileSwitchStatement(asCScriptNode *snode, bool *, asCByteCo
 		return;
 	}
 
+	*hasReturn = true;
 	if( defaultLabel == 0 )
+	{
 		defaultLabel = breakLabel;
+		*hasReturn = false;
+	}
 
 	//---------------------------------
 	// Output the optimized case comparisons
@@ -4241,7 +4253,9 @@ void asCCompiler::CompileSwitchStatement(asCScriptNode *snode, bool *, asCByteCo
 		{
 			expr.bc.Label((short)firstCaseLabel++);
 
-			CompileCase(cnode->firstChild->next, &expr.bc);
+			bool caseHasReturn;
+			CompileCase(cnode->firstChild->next, &caseHasReturn, &expr.bc);
+			*hasReturn &= caseHasReturn;
 		}
 		else
 		{
@@ -4254,7 +4268,9 @@ void asCCompiler::CompileSwitchStatement(asCScriptNode *snode, bool *, asCByteCo
 				break;
 			}
 
-			CompileCase(cnode->firstChild, &expr.bc);
+			bool caseHasReturn;
+			CompileCase(cnode->firstChild, &caseHasReturn, &expr.bc);
+			*hasReturn &= caseHasReturn;
 		}
 
 		cnode = cnode->next;
@@ -4271,14 +4287,14 @@ void asCCompiler::CompileSwitchStatement(asCScriptNode *snode, bool *, asCByteCo
 	RemoveVariableScope();
 }
 
-void asCCompiler::CompileCase(asCScriptNode *node, asCByteCode *bc)
+void asCCompiler::CompileCase(asCScriptNode *node, bool *hasReturn, asCByteCode *bc)
 {
 	bool isFinished = false;
-	bool hasReturn = false;
+	*hasReturn = false;
 	bool hasUnreachableCode = false;
 	while( node )
 	{
-		if( !hasUnreachableCode && (hasReturn || isFinished) )
+		if( !hasUnreachableCode && ((*hasReturn) || isFinished) )
 		{
 			hasUnreachableCode = true;
 			Warning(TXT_UNREACHABLE_CODE, node);
@@ -4297,7 +4313,7 @@ void asCCompiler::CompileCase(asCScriptNode *node, asCByteCode *bc)
 			CompileDeclaration(node, &statement);
 		}
 		else
-			CompileStatement(node, &hasReturn, &statement);
+			CompileStatement(node, hasReturn, &statement);
 
 		LineInstr(bc, node->tokenPos);
 		bc->AddCode(&statement);
@@ -5860,7 +5876,7 @@ bool asCCompiler::CompileRefCast(asCExprContext *ctx, const asCDataType &to, boo
 				// Does the operator take the ?&out parameter?
 				if( func->returnType.GetTokenType() != ttVoid ||
 					func->parameterTypes.GetLength() != 1 ||
-					func->parameterTypes[0].GetTokenType() != ttQuestion ||
+					(func->parameterTypes[0].GetTokenType() != ttQuestion && func->parameterTypes[0].GetTokenType() != ttFunction) ||
 					func->inOutFlags[0] != asTM_OUTREF )
 					continue;
 
@@ -6492,6 +6508,62 @@ asUINT asCCompiler::ImplicitConvLambdaToFunc(asCExprContext *ctx, const asCDataT
 	return asCC_CONST_CONV;
 }
 
+asUINT asCCompiler::ImplicitConvLambdaToNewFunc(asCExprContext *ctx, asCScriptNode *node, EImplicitConv convType, bool generateCode)
+{
+	asASSERT( ctx->IsLambda() );
+
+	int autoFuncdefIndex = 0;
+	asCString autoFuncdefName;
+	autoFuncdefName.Format("___AUTOFUNCDEF%d", autoFuncdefIndex);
+	for( asUINT i=0;i<engine->registeredFuncDefs.GetLength();i++ ) {
+		asCDataType type = asCDataType::CreateType(engine->registeredFuncDefs[i], false);
+		asUINT funcDefFound = ImplicitConvLambdaToFunc(ctx, type, node, convType, generateCode);
+		if( funcDefFound != asCC_NO_CONV )
+		{
+			return funcDefFound;
+		}
+		if( autoFuncdefName == engine->registeredFuncDefs[i]->GetName() ) {
+			autoFuncdefIndex++;
+			autoFuncdefName.Format("___AUTOFUNCDEF%d", autoFuncdefIndex);
+		}
+	}
+
+	// Check that the lambda has the correct amount of arguments
+	asUINT count = 0;
+	asCScriptNode *argNode = ctx->exprNode->firstChild;
+	asCArray<asCDataType> parameterTypes;
+	asCArray<asETypeModifiers> inOutFlags;
+	size_t startPos = argNode->tokenPos;
+	size_t endPos = argNode->tokenPos;
+	while( argNode->nodeType != snStatementBlock )
+	{
+		// Check if the specified parameter types match the funcdef
+		if( argNode->nodeType == snDataType )
+		{
+			asCDataType dt = builder->CreateDataTypeFromNode(argNode, script, outFunc->nameSpace, false, outFunc->objectType);
+			asETypeModifiers inOutFlag;
+			dt = builder->ModifyDataTypeFromNode(dt, argNode->next, script, &inOutFlag, 0);
+
+			parameterTypes.PushLast(dt);
+			inOutFlags.PushLast(inOutFlag);
+
+			argNode = argNode->next;
+		}
+
+		if( argNode->nodeType == snIdentifier )
+			count++;
+		argNode = argNode->next;
+
+		endPos = argNode->tokenPos;
+	}
+
+	asCString params(&script->code[startPos], endPos-startPos-2);
+	params = "void "+autoFuncdefName+"("+params+")";
+	engine->RegisterFuncdef(params.AddressOf());
+
+	return ImplicitConvLambdaToNewFunc(ctx, node, convType, generateCode);
+}
+
 asUINT asCCompiler::ImplicitConversion(asCExprContext *ctx, const asCDataType &to, asCScriptNode *node, EImplicitConv convType, bool generateCode, bool allowObjectConstruct)
 {
 	asASSERT( ctx->type.dataType.GetTokenType() != ttUnrecognizedToken ||
@@ -6522,9 +6594,14 @@ asUINT asCCompiler::ImplicitConversion(asCExprContext *ctx, const asCDataType &t
 		return asCC_NO_CONV;
 
 	// Do we want a var type?
-	if( to.GetTokenType() == ttQuestion )
+	if( to.GetTokenType() == ttQuestion || to.GetTokenType() == ttFunction )
 	{
 		// Any type can be converted to a var type, but only when not generating code
+		if (ctx->IsLambda())
+		{
+			ImplicitConvLambdaToNewFunc(ctx, node, convType, generateCode);
+		}
+
 		asASSERT( !generateCode );
 
 		ctx->type.dataType = to;
@@ -6702,7 +6779,7 @@ asUINT asCCompiler::ImplicitConvObjectToPrimitive(asCExprContext *ctx, const asC
 			// Does the operator take the ?&out parameter?
 			if( func->returnType != asCDataType::CreatePrimitive(ttVoid, false) ||
 				func->parameterTypes.GetLength() != 1 ||
-				func->parameterTypes[0].GetTokenType() != ttQuestion ||
+				(func->parameterTypes[0].GetTokenType() != ttQuestion && func->parameterTypes[0].GetTokenType() != ttFunction) ||
 				func->inOutFlags[0] != asTM_OUTREF )
 				continue;
 
@@ -6996,7 +7073,7 @@ asUINT asCCompiler::ImplicitConvObjectValue(asCExprContext *ctx, const asCDataTy
 					// Does the operator take the ?&out parameter?
 					if( func->returnType != asCDataType::CreatePrimitive(ttVoid, false) ||
 						func->parameterTypes.GetLength() != 1 ||
-						func->parameterTypes[0].GetTokenType() != ttQuestion ||
+						(func->parameterTypes[0].GetTokenType() != ttQuestion && func->parameterTypes[0].GetTokenType() != ttFunction) ||
 						func->inOutFlags[0] != asTM_OUTREF )
 						continue;
 
@@ -7192,7 +7269,7 @@ asUINT asCCompiler::ImplicitConvObjectToObject(asCExprContext *ctx, const asCDat
 				// If the ASHANDLE receives a variable type parameter, then we need to
 				// make sure the expression is treated as a handle and not as a value
 				asCScriptFunction *func = engine->scriptFunctions[funcs[0]];
-				if( func->parameterTypes[0].GetTokenType() == ttQuestion )
+				if( func->parameterTypes[0].GetTokenType() == ttQuestion || func->parameterTypes[0].GetTokenType() == ttFunction )
 				{
 					if( !ctx->type.isExplicitHandle )
 					{
@@ -10010,7 +10087,7 @@ int asCCompiler::CompileVariableAccess(const asCString &name, const asCString &s
 				// too are shared, e.g. application registered vars
 				if (outFunc->IsShared())
 				{
-					if (!isAppProp)
+					if (!isAppProp && !prop->isShared)
 					{
 						asCString str;
 						str.Format(TXT_SHARED_CANNOT_ACCESS_NON_SHARED_VAR_s, prop->name.AddressOf());
@@ -13351,7 +13428,8 @@ int asCCompiler::MatchArgument(asCScriptFunction *desc, const asCExprContext *ar
 	// function with an incorrect argument type, even though the type can normally be converted.
 	if( desc->parameterTypes[paramNum].IsReference() &&
 		desc->inOutFlags[paramNum] == asTM_INOUTREF &&
-		desc->parameterTypes[paramNum].GetTokenType() != ttQuestion )
+		desc->parameterTypes[paramNum].GetTokenType() != ttQuestion &&
+		desc->parameterTypes[paramNum].GetTokenType() != ttFunction )
 	{
 		// Observe, that the below checks are only necessary for when unsafe references have been
 		// enabled by the application. Without this the &inout reference form wouldn't be allowed
@@ -13388,6 +13466,11 @@ int asCCompiler::MatchArgument(asCScriptFunction *desc, const asCExprContext *ar
 			asASSERT( engine->ep.allowUnsafeReferences );
 			return -1;
 		}
+	}
+
+	if( desc->parameterTypes[paramNum].GetTokenType() == ttFunction && argExpr->type.dataType.GetTypeInfo()->name != "$func" )
+	{
+		return -1;
 	}
 
 	// How well does the argument match the function parameter?

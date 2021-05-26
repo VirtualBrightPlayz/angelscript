@@ -1119,7 +1119,7 @@ const char *asCModule::GetGlobalVarDeclaration(asUINT index, bool includeNamespa
 }
 
 // interface
-int asCModule::GetGlobalVar(asUINT index, const char **out_name, const char **out_nameSpace, int *out_typeId, bool *out_isConst) const
+int asCModule::GetGlobalVar(asUINT index, const char **out_name, const char **out_nameSpace, int *out_typeId, bool *out_isConst, bool *out_isSerialize) const
 {
 	const asCGlobalProperty *prop = m_scriptGlobals.Get(index);
 	if (!prop) return asINVALID_ARG;
@@ -1132,6 +1132,8 @@ int asCModule::GetGlobalVar(asUINT index, const char **out_name, const char **ou
 		*out_typeId = m_engine->GetTypeIdFromDataType(prop->type);
 	if( out_isConst )
 		*out_isConst = prop->type.IsReadOnly();
+	if (out_isSerialize)
+		*out_isSerialize = prop->isSerialize;
 
 	return asSUCCESS;
 }
@@ -1252,12 +1254,13 @@ int asCModule::GetNextImportedFunctionId()
 
 #ifndef AS_NO_COMPILER
 // internal
-int asCModule::AddScriptFunction(int sectionIdx, int declaredAt, int id, const asCString &funcName, const asCDataType &returnType, const asCArray<asCDataType> &params, const asCArray<asCString> &paramNames, const asCArray<asETypeModifiers> &inOutFlags, const asCArray<asCString *> &defaultArgs, bool isInterface, asCObjectType *objType, bool isGlobalFunction, asSFunctionTraits funcTraits, asSNameSpace *ns)
+int asCModule::AddScriptFunction(int sectionIdx, int declaredAt, int id, const asCString& funcName, const asCDataType& returnType, const asCArray<asCDataType>& params, const asCArray<asCString>& paramNames, const asCArray<asETypeModifiers>& inOutFlags, const asCArray<asCString*>& defaultArgs, bool isInterface, bool isAbstract, asCObjectType* objType, bool isGlobalFunction, asSFunctionTraits funcTraits, asSNameSpace* ns)
 {
 	asASSERT(id >= 0);
 
 	// Store the function information
-	asCScriptFunction *func = asNEW(asCScriptFunction)(m_engine, this, isInterface ? asFUNC_INTERFACE : asFUNC_SCRIPT);
+	// TODO: add asFUNC_ABSTRACT?
+	asCScriptFunction *func = asNEW(asCScriptFunction)(m_engine, this, (isInterface || isAbstract) ? asFUNC_INTERFACE : asFUNC_SCRIPT);
 	if( func == 0 )
 	{
 		// Free the default args
@@ -1274,6 +1277,9 @@ int asCModule::AddScriptFunction(int sectionIdx, int declaredAt, int id, const a
 	// All methods of shared objects are also shared
 	if( objType && objType->IsShared() )
 		funcTraits.SetTrait(asTRAIT_SHARED, true);
+
+	if( isAbstract )
+		funcTraits.SetTrait(asTRAIT_ABSTRACT, true);
 
 	func->name             = funcName;
 	func->nameSpace        = ns;

@@ -793,6 +793,14 @@ const char *asCScriptObject::GetPropertyName(asUINT prop) const
 	return objType->properties[prop]->name.AddressOf();
 }
 
+bool asCScriptObject::IsPropertySerializable(asUINT prop) const
+{
+	if( prop >= objType->properties.GetLength() )
+		return 0;
+
+	return objType->properties[prop]->isSerialize;
+}
+
 void *asCScriptObject::GetAddressOfProperty(asUINT prop)
 {
 	if( prop >= objType->properties.GetLength() )

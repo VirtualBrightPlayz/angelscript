@@ -309,6 +309,7 @@ public:
 	
 	// Global property management
 	asCGlobalProperty *AllocateGlobalProperty();
+	asCGlobalProperty *GetSharedGlobalProperty(asCString name);
 	void RemoveGlobalProperty(asCGlobalProperty *prop);
 
 	int GetScriptSectionNameIndex(const char *name);

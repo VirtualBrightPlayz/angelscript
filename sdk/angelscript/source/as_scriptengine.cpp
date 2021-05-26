@@ -1515,6 +1515,7 @@ int asCScriptEngine::RegisterObjectProperty(const char *obj, const char *declara
 	prop->byteOffset          = byteOffset;
 	prop->isPrivate           = false;
 	prop->isProtected         = false;
+	prop->isSerialize         = false;
 	prop->compositeOffset     = compositeOffset;
 	prop->isCompositeIndirect = isCompositeIndirect;
 	prop->accessMask          = defaultAccessMask;
@@ -2513,11 +2514,11 @@ int asCScriptEngine::SetTemplateRestrictions(asCObjectType *templateType, asCScr
 int asCScriptEngine::VerifyVarTypeNotInFunction(asCScriptFunction *func)
 {
 	// Don't allow var type in this function
-	if( func->returnType.GetTokenType() == ttQuestion )
+	if( func->returnType.GetTokenType() == ttQuestion || func->returnType.GetTokenType() == ttFunction )
 		return asINVALID_DECLARATION;
 
 	for( unsigned int n = 0; n < func->parameterTypes.GetLength(); n++ )
-		if( func->parameterTypes[n].GetTokenType() == ttQuestion )
+		if( func->parameterTypes[n].GetTokenType() == ttQuestion || func->parameterTypes[n].GetTokenType() == ttFunction )
 			return asINVALID_DECLARATION;
 
 	return 0;
@@ -2593,6 +2594,8 @@ int asCScriptEngine::RegisterGlobalProperty(const char *declaration, void *point
 	prop->nameSpace   = defaultNamespace;
 	prop->type        = type;
 	prop->accessMask  = defaultAccessMask;
+	prop->isSerialize = false;
+	prop->isShared    = false;
 
 	prop->SetRegisteredAddress(pointer);
 	varAddressMap.Insert(prop->GetAddressOfValue(), prop);
@@ -2628,6 +2631,21 @@ asCGlobalProperty *asCScriptEngine::AllocateGlobalProperty()
 	prop->id = (asUINT)globalProperties.GetLength();
 	globalProperties.PushLast(prop);
 	return prop;
+}
+
+// internal
+asCGlobalProperty *asCScriptEngine::GetSharedGlobalProperty(asCString name)
+{
+	for( asUINT i=0;i<globalProperties.GetLength();i++ )
+	{
+		asCGlobalProperty *prop = globalProperties[i];
+		if( prop->name==name && prop->isShared )
+		{
+			return prop;
+		}
+
+	}
+	return nullptr;
 }
 
 // internal
@@ -4111,7 +4129,13 @@ void asCScriptEngine::CallObjectMethod(void *obj, asSSystemFunctionInterface *i,
 		void (asCSimpleDummy::*f)() = p.mthd;
 		(((asCSimpleDummy*)obj)->*f)();
 	}
-	else /*if( i->callConv == ICC_CDECL_OBJLAST || i->callConv == ICC_CDECL_OBJFIRST )*/
+	else if( i->callConv == ICC_THISCALL_OBJLAST || i->callConv == ICC_THISCALL_OBJFIRST )
+	{
+		// THIS IS A HACK :)
+		void (*f)(void *,void *) = (void (*)(void *, void *))(i->func);
+		f(i->auxiliary, obj);
+	}
+	else
 	{
 		void (*f)(void *) = (void (*)(void *))(i->func);
 		f(obj);
@@ -4143,7 +4167,13 @@ void asCScriptEngine::CallObjectMethod(void *obj, asSSystemFunctionInterface *i,
 		void (*f)(asIScriptGeneric *) = (void (*)(asIScriptGeneric *))(i->func);
 		f(&gen);
 	}
-	else /*if( i->callConv == ICC_CDECL_OBJLAST || i->callConv == ICC_CDECL_OBJFIRST )*/
+	else if( i->callConv == ICC_THISCALL_OBJLAST || i->callConv == ICC_THISCALL_OBJFIRST )
+	{
+		// THIS IS A HACK :)
+		void (*f)(void *,void *) = (void (*)(void *, void *))(i->func);
+		f(i->auxiliary, obj);
+	}
+	else
 	{
 		void (*f)(void *) = (void (*)(void *))(i->func);
 		f(obj);
@@ -4774,7 +4804,7 @@ int asCScriptEngine::GetTypeIdFromDataType(const asCDataType &dtIn) const
 		case ttDouble: return asTYPEID_DOUBLE;
 		default:
 			// All types should be covered by the above. The variable type is not really a type
-			asASSERT(dtIn.GetTokenType() == ttQuestion);
+			asASSERT(dtIn.GetTokenType() == ttQuestion || dtIn.GetTokenType() == ttFunction);
 			return -1;
 		}
 	}
@@ -4984,7 +5014,7 @@ int asCScriptEngine::RefCastObject(void *obj, asITypeInfo *fromType, asITypeInfo
 			}
 			else if( func->returnType.GetTokenType() == ttVoid &&
 					 func->parameterTypes.GetLength() == 1 &&
-					 func->parameterTypes[0].GetTokenType() == ttQuestion )
+					 (func->parameterTypes[0].GetTokenType() == ttQuestion || func->parameterTypes[0].GetTokenType() == ttFunction) )
 			{
 				universalCastFunc = func;
 			}
@@ -6480,7 +6510,7 @@ void asCScriptEngine::DestroySubList(asBYTE *&buffer, asSListPatternNode *&node)
 				count = 1;
 
 			asCDataType dt = reinterpret_cast<asSListPatternDataTypeNode*>(node)->dataType;
-			bool isVarType = dt.GetTokenType() == ttQuestion;
+			bool isVarType = dt.GetTokenType() == ttQuestion || dt.GetTokenType() == ttFunction;
 
 			while( count-- )
 			{

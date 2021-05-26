@@ -706,7 +706,7 @@ void asCBuilder::ParseScripts()
 				if( node->nodeType == snFunction )
 				{
 					node->DisconnectParent();
-					RegisterScriptFunctionFromNode(node, decl->script, CastToObjectType(decl->typeInfo), true, false, 0, decl->isExistingShared);
+					RegisterScriptFunctionFromNode(node, decl->script, CastToObjectType(decl->typeInfo), true, false, false, 0, decl->isExistingShared);
 				}
 				else if( node->nodeType == snVirtualProperty )
 				{
@@ -735,7 +735,7 @@ void asCBuilder::ParseScripts()
 				if( node->nodeType == snFunction )
 				{
 					node->DisconnectParent();
-					RegisterScriptFunctionFromNode(node, decl->script, CastToObjectType(decl->typeInfo), false, false, 0, decl->isExistingShared);
+					RegisterScriptFunctionFromNode(node, decl->script, CastToObjectType(decl->typeInfo), false, false, false, 0, decl->isExistingShared);
 				}
 				else if( node->nodeType == snVirtualProperty )
 				{
@@ -866,7 +866,7 @@ void asCBuilder::RegisterNonTypesFromScript(asCScriptNode *node, asCScriptCode *
 		{
 			node->DisconnectParent();
 			if( node->nodeType == snFunction )
-				RegisterScriptFunctionFromNode(node, script, 0, false, true, ns);
+				RegisterScriptFunctionFromNode(node, script, 0, false, false, true, ns);
 			else if( node->nodeType == snDeclaration )
 				RegisterGlobalVar(node, script, ns);
 			else if( node->nodeType == snVirtualProperty )
@@ -1126,7 +1126,7 @@ bool asCBuilder::DoesGlobalPropertyExist(const char *prop, asSNameSpace *ns, asC
 #ifndef AS_NO_COMPILER
 	// Check properties being compiled now
 	sGlobalVariableDescription* desc = globVariables.GetFirst(ns, prop);
-	if( desc && !desc->isEnumValue )
+	if( desc && !desc->isEnumValue && !desc->isExternal )
 	{
 		if( outProp ) *outProp = desc->property;
 		if( outDesc ) *outDesc = desc;
@@ -1138,6 +1138,10 @@ bool asCBuilder::DoesGlobalPropertyExist(const char *prop, asSNameSpace *ns, asC
 	if( module )
 	{
 		globProp = module->m_scriptGlobals.GetFirst(ns, prop);
+		if( !globProp )
+		{
+			globProp = module->m_externalGlobals.GetFirst(ns, prop);
+		}
 		if( globProp )
 		{
 			if( outProp ) *outProp = globProp;
@@ -1290,6 +1294,10 @@ int asCBuilder::ParseFunctionDeclaration(asCObjectType *objType, const char *dec
 
 		// Make sure that var type parameters are references
 		if( type.GetTokenType() == ttQuestion &&
+			!type.IsReference() )
+			return asINVALID_DECLARATION;
+
+		if( type.GetTokenType() == ttFunction &&
 			!type.IsReference() )
 			return asINVALID_DECLARATION;
 
@@ -2024,8 +2032,33 @@ int asCBuilder::RegisterGlobalVar(asCScriptNode *node, asCScriptCode *file, asSN
 	if( engine->ep.disallowGlobalVars )
 		WriteError(TXT_GLOBAL_VARS_NOT_ALLOWED, file, node);
 
+	asCScriptNode *n = node->firstChild;
+
+	bool isShared = false;
+	bool isExternal = false;
+	if( n->tokenType == ttIdentifier )
+	{
+		if( file->TokenEquals(n->tokenPos, n->tokenLength, SHARED_TOKEN) )
+		{
+			isShared = true;
+			n = n->next;
+		}
+		else if( file->TokenEquals(n->tokenPos, n->tokenLength, EXTERNAL_TOKEN) )
+		{
+			isExternal = true;
+			n = n->next;
+		}
+	}
+
+	bool isSerialize = false;
+	if( n->tokenType == ttSerialize )
+	{
+		isSerialize = true;
+		n = n->next;
+	}
+
 	// What data type is it?
-	asCDataType type = CreateDataTypeFromNode(node->firstChild, file, ns);
+	asCDataType type = CreateDataTypeFromNode(n, file, ns);
 
 	if( !type.CanBeInstantiated() )
 	{
@@ -2041,7 +2074,7 @@ int asCBuilder::RegisterGlobalVar(asCScriptNode *node, asCScriptCode *file, asSN
 		WriteError(str, file, node);
 	}
 
-	asCScriptNode *n = node->firstChild->next;
+	n = n->next;
 
 	while( n )
 	{
@@ -2062,6 +2095,9 @@ int asCBuilder::RegisterGlobalVar(asCScriptNode *node, asCScriptCode *file, asSN
 		gvar->isCompiled  = false;
 		gvar->datatype    = type;
 		gvar->isEnumValue = false;
+		gvar->isSerialize = isSerialize;
+		gvar->isShared    = isShared;
+		gvar->isExternal  = isExternal;
 		gvar->ns          = ns;
 
 		// TODO: Give error message if wrong
@@ -2206,6 +2242,7 @@ int asCBuilder::RegisterClass(asCScriptNode *node, asCScriptCode *file, asSNameS
 				WriteWarning(msg, file, n);
 			}
 			isExternal = true;
+			isShared = true;
 		}
 		else if( file->TokenEquals(n->tokenPos, n->tokenLength, ABSTRACT_TOKEN) )
 		{
@@ -2396,7 +2433,10 @@ int asCBuilder::RegisterInterface(asCScriptNode *node, asCScriptCode *file, asSN
 		if (file->TokenEquals(n->tokenPos, n->tokenLength, SHARED_TOKEN))
 			isShared = true;
 		else if (file->TokenEquals(n->tokenPos, n->tokenLength, EXTERNAL_TOKEN))
+		{
+			isShared = true;
 			isExternal = true;
+		}
 		else
 			break;
 		n = n->next;
@@ -2552,115 +2592,162 @@ void asCBuilder::CompileGlobalVariables()
 			if( gvar->isCompiled )
 				continue;
 
-			asCByteCode init(engine);
-			numWarnings = 0;
-			numErrors = 0;
-			outBuffer.Clear();
+			bool sharingError = false;
 
-			// Skip this for now if we're not compiling complex types yet
-			if( compilingPrimitives && !gvar->datatype.IsPrimitive() )
-				continue;
-
-			if( gvar->declaredAtNode )
+			if( gvar->isShared )
 			{
+				asASSERT( gvar->declaredAtNode != nullptr );
+
 				int r, c;
 				gvar->script->ConvertPosToRowCol(gvar->declaredAtNode->tokenPos, &r, &c);
-				asCString str = gvar->datatype.Format(gvar->ns);
-				str += " " + gvar->name;
-				str.Format(TXT_COMPILING_s, str.AddressOf());
-				WriteInfo(gvar->script->name, str, r, c, true);
+
+				if( !gvar->datatype.IsPrimitive() &&
+					gvar->datatype != engine->stringType && 
+					!gvar->datatype.GetTypeInfo()->IsShared() )
+				{
+					WriteError(gvar->script->name, "Data type is not shared", r, c);
+					sharingError = true;
+				}
 			}
 
-			if( gvar->isEnumValue )
+			if( gvar->isExternal )
 			{
-				int r;
-				if( gvar->initializationNode )
+				asASSERT( gvar->declaredAtNode != nullptr );
+
+				int r, c;
+				gvar->script->ConvertPosToRowCol(gvar->declaredAtNode->tokenPos, &r, &c);
+
+				gvar->property = engine->GetSharedGlobalProperty(gvar->name);
+
+				if( gvar->property->type != gvar->datatype )
 				{
-					asCCompiler comp(engine);
-					asCScriptFunction func(engine, module, asFUNC_SCRIPT);
-
-					// Set the namespace that should be used during the compilation
-					func.nameSpace = gvar->datatype.GetTypeInfo()->nameSpace;
-
-					// Temporarily switch the type of the variable to int so it can be compiled properly
-					asCDataType saveType;
-					saveType = gvar->datatype;
-					gvar->datatype = asCDataType::CreatePrimitive(ttInt, true);
-					r = comp.CompileGlobalVariable(this, gvar->script, gvar->initializationNode, gvar, &func);
-					gvar->datatype = saveType;
-
-					// Make the function a dummy so it doesn't try to release objects while destroying the function
-					func.funcType = asFUNC_DUMMY;
+					WriteError(gvar->script->name, "Type of external declaration does not match shared declaration", r, c);
+					sharingError = true;
 				}
-				else
+
+				if( !sharingError )
 				{
-					r = 0;
+					module->m_externalGlobals.Put(gvar->property);
 
-					// When there is no assignment the value is the last + 1
-					int enumVal = 0;
-					asCSymbolTable<sGlobalVariableDescription>::iterator prev_it = it;
-					prev_it--;
-					if( prev_it )
+					compileSucceeded = true;
+					gvar->isCompiled = true;
+
+					continue;
+				}
+			}
+
+			if( !sharingError )
+			{
+				asCByteCode init(engine);
+				numWarnings = 0;
+				numErrors = 0;
+				outBuffer.Clear();
+
+				// Skip this for now if we're not compiling complex types yet
+				if( compilingPrimitives && !gvar->datatype.IsPrimitive() )
+					continue;
+
+				if( gvar->declaredAtNode )
+				{
+					int r, c;
+					gvar->script->ConvertPosToRowCol(gvar->declaredAtNode->tokenPos, &r, &c);
+					asCString str = gvar->datatype.Format(gvar->ns);
+					str += " " + gvar->name;
+					str.Format(TXT_COMPILING_s, str.AddressOf());
+					WriteInfo(gvar->script->name, str, r, c, true);
+				}
+
+				if( gvar->isEnumValue )
+				{
+					int r;
+					if( gvar->initializationNode )
 					{
-						sGlobalVariableDescription *gvar2 = *prev_it;
-						if(gvar2->datatype == gvar->datatype )
+						asCCompiler comp(engine);
+						asCScriptFunction func(engine, module, asFUNC_SCRIPT);
+
+						// Set the namespace that should be used during the compilation
+						func.nameSpace = gvar->datatype.GetTypeInfo()->nameSpace;
+
+						// Temporarily switch the type of the variable to int so it can be compiled properly
+						asCDataType saveType;
+						saveType = gvar->datatype;
+						gvar->datatype = asCDataType::CreatePrimitive(ttInt, true);
+						r = comp.CompileGlobalVariable(this, gvar->script, gvar->initializationNode, gvar, &func);
+						gvar->datatype = saveType;
+
+						// Make the function a dummy so it doesn't try to release objects while destroying the function
+						func.funcType = asFUNC_DUMMY;
+					}
+					else
+					{
+						r = 0;
+
+						// When there is no assignment the value is the last + 1
+						int enumVal = 0;
+						asCSymbolTable<sGlobalVariableDescription>::iterator prev_it = it;
+						prev_it--;
+						if( prev_it )
 						{
-							enumVal = int(gvar2->constantValue) + 1;
-
-							if( !gvar2->isCompiled )
+							sGlobalVariableDescription *gvar2 = *prev_it;
+							if( gvar2->datatype == gvar->datatype )
 							{
-								int row, col;
-								gvar->script->ConvertPosToRowCol(gvar->declaredAtNode->tokenPos, &row, &col);
+								enumVal = int(gvar2->constantValue) + 1;
 
-								asCString str = gvar->datatype.Format(gvar->ns);
-								str += " " + gvar->name;
-								str.Format(TXT_COMPILING_s, str.AddressOf());
-								WriteInfo(gvar->script->name, str, row, col, true);
+								if( !gvar2->isCompiled )
+								{
+									int row, col;
+									gvar->script->ConvertPosToRowCol(gvar->declaredAtNode->tokenPos, &row, &col);
 
-								str.Format(TXT_UNINITIALIZED_GLOBAL_VAR_s, gvar2->name.AddressOf());
-								WriteError(gvar->script->name, str, row, col);
-								r = -1;
+									asCString str = gvar->datatype.Format(gvar->ns);
+									str += " " + gvar->name;
+									str.Format(TXT_COMPILING_s, str.AddressOf());
+									WriteInfo(gvar->script->name, str, row, col, true);
+
+									str.Format(TXT_UNINITIALIZED_GLOBAL_VAR_s, gvar2->name.AddressOf());
+									WriteError(gvar->script->name, str, row, col);
+									r = -1;
+								}
 							}
 						}
+
+						gvar->constantValue = enumVal;
 					}
 
-					gvar->constantValue = enumVal;
-				}
-
-				if( r >= 0 )
-				{
-					// Set the value as compiled
-					gvar->isCompiled = true;
-					compileSucceeded = true;
-				}
-			}
-			else
-			{
-				// Compile the global variable
-				initFunc = asNEW(asCScriptFunction)(engine, module, asFUNC_SCRIPT);
-				if( initFunc == 0 )
-				{
-					// Out of memory
-					return;
-				}
-
-				// Set the namespace that should be used for this function
-				initFunc->nameSpace = gvar->ns;
-
-				asCCompiler comp(engine);
-				int r = comp.CompileGlobalVariable(this, gvar->script, gvar->initializationNode, gvar, initFunc);
-				if( r >= 0 )
-				{
-					// Compilation succeeded
-					gvar->isCompiled = true;
-					compileSucceeded = true;
+					if( r >= 0 )
+					{
+						// Set the value as compiled
+						gvar->isCompiled = true;
+						compileSucceeded = true;
+					}
 				}
 				else
 				{
-					// Compilation failed
-					initFunc->funcType = asFUNC_DUMMY;
-					asDELETE(initFunc, asCScriptFunction);
-					initFunc = 0;
+					// Compile the global variable
+					initFunc = asNEW(asCScriptFunction)(engine, module, asFUNC_SCRIPT);
+					if( initFunc == 0 )
+					{
+						// Out of memory
+						return;
+					}
+
+					// Set the namespace that should be used for this function
+					initFunc->nameSpace = gvar->ns;
+
+					asCCompiler comp(engine);
+					int r = comp.CompileGlobalVariable(this, gvar->script, gvar->initializationNode, gvar, initFunc);
+					if( r >= 0 )
+					{
+						// Compilation succeeded
+						gvar->isCompiled = true;
+						compileSucceeded = true;
+					}
+					else
+					{
+						// Compilation failed
+						initFunc->funcType = asFUNC_DUMMY;
+						asDELETE(initFunc, asCScriptFunction);
+						initFunc = 0;
+					}
 				}
 			}
 
@@ -2776,6 +2863,13 @@ void asCBuilder::CompileGlobalVariables()
 		// variables must be preserved.
 		if( module->m_scriptGlobals.GetSize() == initOrder.GetSize() )
 			module->m_scriptGlobals.SwapWith(initOrder);
+	}
+
+	asCSymbolTableIterator<asCGlobalProperty> externalIt = module->m_externalGlobals.List();
+	while( externalIt )
+	{
+		module->m_externalPtrs.PushLast((*externalIt)->GetAddressOfValue());
+		externalIt++;
 	}
 
 	CleanupEnumValues();
@@ -3326,7 +3420,7 @@ void asCBuilder::CompileClasses(asUINT numTempl)
 			// Copy properties from base class to derived class
 			for( asUINT p = 0; p < baseType->properties.GetLength(); p++ )
 			{
-				asCObjectProperty *prop = AddPropertyToClass(decl, baseType->properties[p]->name, baseType->properties[p]->type, baseType->properties[p]->isPrivate, baseType->properties[p]->isProtected, true);
+				asCObjectProperty *prop = AddPropertyToClass(decl, baseType->properties[p]->name, baseType->properties[p]->type, baseType->properties[p]->isPrivate, baseType->properties[p]->isProtected, baseType->properties[p]->isSerialize, true);
 
 				// The properties must maintain the same offset
 				asASSERT(prop && prop->byteOffset == baseType->properties[p]->byteOffset); UNUSED_VAR(prop);
@@ -3393,6 +3487,12 @@ void asCBuilder::CompileClasses(asUINT numTempl)
 
 				if( !found )
 				{
+					if( baseFunc->IsAbstract() )
+					{
+						asCString msg;
+						msg.Format(TXT_METHOD_MUST_OVERRIDE_s, baseFunc->GetDeclaration());
+						WriteError(msg, decl->script, decl->node);
+					}
 					// Push the base class function on the virtual function table
 					ot->virtualFunctionTable.PushLast(baseType->virtualFunctionTable[m]);
 					baseType->virtualFunctionTable[m]->AddRefInternal();
@@ -3486,16 +3586,28 @@ void asCBuilder::CompileClasses(asUINT numTempl)
 			asCScriptNode *nd = node->firstChild;
 
 			// Is the property declared as private or protected?
-			bool isPrivate = false, isProtected = false;
-			if( nd && nd->tokenType == ttPrivate )
+			bool isPrivate = false, isProtected = false, isSerialize = false;
+			for( int k = 0; k < 2; k++ )
 			{
-				isPrivate = true;
-				nd = nd->next;
-			}
-			else if( nd && nd->tokenType == ttProtected )
-			{
-				isProtected = true;
-				nd = nd->next;
+				if( nd && nd->tokenType == ttPrivate )
+				{
+					isPrivate = true;
+					nd = nd->next;
+				}
+				else if( nd && nd->tokenType == ttProtected )
+				{
+					isProtected = true;
+					nd = nd->next;
+				}
+				else if( nd && nd->tokenType == ttSerialize )
+				{
+					isSerialize = true;
+					nd = nd->next;
+				}
+				else
+				{
+					break;
+				}
 			}
 
 			// Determine the type of the property
@@ -3520,7 +3632,7 @@ void asCBuilder::CompileClasses(asUINT numTempl)
 				if( !decl->isExistingShared )
 				{
 					CheckNameConflictMember(ot, name.AddressOf(), nd, file, true, false);
-					AddPropertyToClass(decl, name, dt, isPrivate, isProtected, false, file, nd);
+					AddPropertyToClass(decl, name, dt, isPrivate, isProtected, isSerialize, false, file, nd);
 				}
 				else
 				{
@@ -3531,6 +3643,7 @@ void asCBuilder::CompileClasses(asUINT numTempl)
 						asCObjectProperty *prop = ot->properties[p];
 						if( prop->isPrivate == isPrivate &&
 							prop->isProtected == isProtected &&
+							prop->isSerialize == isSerialize &&
 							prop->name == name &&
 							prop->type.IsEqualExceptRef(dt) )
 						{
@@ -4039,16 +4152,28 @@ void asCBuilder::IncludePropertiesFromMixins(sClassDeclaration *decl)
 				if( n->nodeType == snDeclaration )
 				{
 					asCScriptNode *n2 = n->firstChild;
-					bool isPrivate = false, isProtected = false;
-					if( n2 && n2->tokenType == ttPrivate )
+					bool isPrivate = false, isProtected = false, isSerialize = false;
+					for( int k = 0; k < 2; k++ )
 					{
-						isPrivate = true;
-						n2 = n2->next;
-					}
-					else if( n2 && n2->tokenType == ttProtected )
-					{
-						isProtected = true;
-						n2 = n2->next;
+						if( n2 && n2->tokenType == ttPrivate )
+						{
+							isPrivate = true;
+							n2 = n2->next;
+						}
+						else if( n2 && n2->tokenType == ttProtected )
+						{
+							isProtected = true;
+							n2 = n2->next;
+						}
+						else if( n2 && n2->tokenType == ttSerialize )
+						{
+							isSerialize = true;
+							n2 = n2->next;
+						}
+						else
+						{
+							break;
+						}
 					}
 
 					asCScriptCode *file = mixin->script;
@@ -4089,7 +4214,7 @@ void asCBuilder::IncludePropertiesFromMixins(sClassDeclaration *decl)
 								if( r < 0 )
 									WriteInfo(TXT_WHILE_INCLUDING_MIXIN, decl->script, node);
 
-								AddPropertyToClass(decl, name, dt, isPrivate, isProtected, false, file, n2);
+								AddPropertyToClass(decl, name, dt, isPrivate, isProtected, isSerialize, false, file, n2);
 							}
 							else
 							{
@@ -4100,6 +4225,7 @@ void asCBuilder::IncludePropertiesFromMixins(sClassDeclaration *decl)
 									asCObjectProperty *prop = ot->properties[p];
 									if( prop->isPrivate == isPrivate &&
 										prop->isProtected == isProtected &&
+										prop->isSerialize == isSerialize &&
 										prop->name == name &&
 										prop->type == dt )
 									{
@@ -4164,7 +4290,7 @@ int asCBuilder::CreateVirtualFunction(asCScriptFunction *func, int idx)
 	return vf->id;
 }
 
-asCObjectProperty *asCBuilder::AddPropertyToClass(sClassDeclaration *decl, const asCString &name, const asCDataType &dt, bool isPrivate, bool isProtected, bool isInherited, asCScriptCode *file, asCScriptNode *node)
+asCObjectProperty *asCBuilder::AddPropertyToClass(sClassDeclaration *decl, const asCString &name, const asCDataType &dt, bool isPrivate, bool isProtected, bool isSerialize, bool isInherited, asCScriptCode *file, asCScriptNode *node)
 {
 	if( node )
 	{
@@ -4208,7 +4334,7 @@ asCObjectProperty *asCBuilder::AddPropertyToClass(sClassDeclaration *decl, const
 	}
 
 	// Add the property to the object type
-	return CastToObjectType(decl->typeInfo)->AddPropertyToClass(name, dt, isPrivate, isProtected, isInherited);
+	return CastToObjectType(decl->typeInfo)->AddPropertyToClass(name, dt, isPrivate, isProtected, isSerialize, isInherited);
 }
 
 bool asCBuilder::DoesMethodExist(asCObjectType *objType, int methodId, asUINT *methodIndex)
@@ -4246,7 +4372,7 @@ void asCBuilder::AddDefaultConstructor(asCObjectType *objType, asCScriptCode *fi
 
 	// Add the script function
 	// TODO: declaredAt should be set to where the class has been declared
-	module->AddScriptFunction(file->idx, 0, funcId, objType->name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, false, objType, false, asSFunctionTraits(), objType->nameSpace);
+	module->AddScriptFunction(file->idx, 0, funcId, objType->name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, false, false, objType, false, asSFunctionTraits(), objType->nameSpace);
 
 	// Set it as default constructor
 	if( objType->beh.construct )
@@ -4281,7 +4407,7 @@ void asCBuilder::AddDefaultConstructor(asCObjectType *objType, asCScriptCode *fi
 	objType->beh.factories[0] = funcId;
 	returnType = asCDataType::CreateObjectHandle(objType, false);
 	// TODO: should be the same as the constructor
-	module->AddScriptFunction(file->idx, 0, funcId, objType->name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, false);
+	module->AddScriptFunction(file->idx, 0, funcId, objType->name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, false, false);
 	functions.PushLast(0);
 	asCCompiler compiler(engine);
 	compiler.CompileFactory(this, file, engine->scriptFunctions[funcId]);
@@ -4304,7 +4430,10 @@ int asCBuilder::RegisterEnum(asCScriptNode *node, asCScriptCode *file, asSNameSp
 		if (file->TokenEquals(tmp->tokenPos, tmp->tokenLength, SHARED_TOKEN))
 			isShared = true;
 		else if (file->TokenEquals(tmp->tokenPos, tmp->tokenLength, EXTERNAL_TOKEN))
+		{
+			isShared = true;
 			isExternal = true;
+		}
 		else
 			break;
 		tmp = tmp->next;
@@ -4478,6 +4607,9 @@ int asCBuilder::RegisterEnum(asCScriptNode *node, asCScriptCode *file, asSNameSp
 				gvar->isCompiled         = false;
 				gvar->isPureConstant     = true;
 				gvar->isEnumValue        = true;
+				gvar->isSerialize        = false;
+				gvar->isShared           = false;
+				gvar->isExternal         = false;
 				gvar->constantValue      = 0xdeadbeef;
 
 				// Allocate dummy property so we can compile the value.
@@ -4489,6 +4621,7 @@ int asCBuilder::RegisterEnum(asCScriptNode *node, asCScriptCode *file, asSNameSp
 				gvar->property->name      = name;
 				gvar->property->nameSpace = ns;
 				gvar->property->type      = gvar->datatype;
+				gvar->property->isSerialize = gvar->isSerialize;
 				gvar->property->id        = 0;
 
 				globVariables.Put(gvar);
@@ -4569,7 +4702,10 @@ void asCBuilder::GetParsedFunctionDetails(asCScriptNode *node, asCScriptCode *fi
 		if (file->TokenEquals(node->tokenPos, node->tokenLength, SHARED_TOKEN))
 			funcTraits.SetTrait(asTRAIT_SHARED, true);
 		else if (file->TokenEquals(node->tokenPos, node->tokenLength, EXTERNAL_TOKEN))
+		{
+			funcTraits.SetTrait(asTRAIT_SHARED, true);
 			funcTraits.SetTrait(asTRAIT_EXTERNAL, true);
+		}
 		else
 			break;
 		node = node->next;
@@ -4760,7 +4896,7 @@ asCString asCBuilder::GetCleanExpressionString(asCScriptNode *node, asCScriptCod
 }
 
 #ifndef AS_NO_COMPILER
-int asCBuilder::RegisterScriptFunctionFromNode(asCScriptNode *node, asCScriptCode *file, asCObjectType *objType, bool isInterface, bool isGlobalFunction, asSNameSpace *ns, bool isExistingShared, bool isMixin)
+int asCBuilder::RegisterScriptFunctionFromNode(asCScriptNode *node, asCScriptCode *file, asCObjectType *objType, bool isInterface, bool isAbstract, bool isGlobalFunction, asSNameSpace *ns, bool isExistingShared, bool isMixin)
 {
 	asCString                  name;
 	asCDataType                returnType;
@@ -4783,7 +4919,7 @@ int asCBuilder::RegisterScriptFunctionFromNode(asCScriptNode *node, asCScriptCod
 
 	GetParsedFunctionDetails(node, file, objType, name, returnType, parameterNames, parameterTypes, inOutFlags, defaultArgs, funcTraits, ns);
 
-	return RegisterScriptFunction(node, file, objType, isInterface, isGlobalFunction, ns, isExistingShared, isMixin, name, returnType, parameterNames, parameterTypes, inOutFlags, defaultArgs, funcTraits);
+	return RegisterScriptFunction(node, file, objType, isInterface, isAbstract, isGlobalFunction, ns, isExistingShared, isMixin, name, returnType, parameterNames, parameterTypes, inOutFlags, defaultArgs, funcTraits);
 }
 
 asCScriptFunction *asCBuilder::RegisterLambda(asCScriptNode *node, asCScriptCode *file, asCScriptFunction *funcDef, const asCString &name, asSNameSpace *ns, bool isShared)
@@ -4811,7 +4947,7 @@ asCScriptFunction *asCBuilder::RegisterLambda(asCScriptNode *node, asCScriptCode
 	asCString funcName = name;
 	asSFunctionTraits traits;
 	traits.SetTrait(asTRAIT_SHARED, isShared);
-	int r = RegisterScriptFunction(args, file, 0, 0, true, ns, false, false, funcName, funcDef->returnType, parameterNames, funcDef->parameterTypes, funcDef->inOutFlags, defaultArgs, traits);
+	int r = RegisterScriptFunction(args, file, 0, false, false, true, ns, false, false, funcName, funcDef->returnType, parameterNames, funcDef->parameterTypes, funcDef->inOutFlags, defaultArgs, asSFunctionTraits());
 	if( r < 0 )
 		return 0;
 
@@ -4819,7 +4955,7 @@ asCScriptFunction *asCBuilder::RegisterLambda(asCScriptNode *node, asCScriptCode
 	return engine->scriptFunctions[functions[functions.GetLength()-1]->funcId];
 }
 
-int asCBuilder::RegisterScriptFunction(asCScriptNode *node, asCScriptCode *file, asCObjectType *objType, bool isInterface, bool isGlobalFunction, asSNameSpace *ns, bool isExistingShared, bool isMixin, asCString &name, asCDataType &returnType, asCArray<asCString> &parameterNames, asCArray<asCDataType> &parameterTypes, asCArray<asETypeModifiers> &inOutFlags, asCArray<asCString *> &defaultArgs, asSFunctionTraits funcTraits)
+int asCBuilder::RegisterScriptFunction(asCScriptNode *node, asCScriptCode *file, asCObjectType *objType, bool isInterface, bool isAbstract, bool isGlobalFunction, asSNameSpace *ns, bool isExistingShared, bool isMixin, asCString &name, asCDataType &returnType, asCArray<asCString> &parameterNames, asCArray<asCDataType> &parameterTypes, asCArray<asETypeModifiers> &inOutFlags, asCArray<asCString *> &defaultArgs, asSFunctionTraits funcTraits)
 {
 	// Determine default namespace if not specified
 	if( ns == 0 )
@@ -4949,7 +5085,7 @@ int asCBuilder::RegisterScriptFunction(asCScriptNode *node, asCScriptCode *file,
 	
 	isExistingShared = false;
 	int funcId = engine->GetNextScriptFunctionId();
-	if( !isInterface )
+	if( !isInterface && !isAbstract )
 	{
 		sFunctionDescription *func = asNEW(sFunctionDescription);
 		if( func == 0 )
@@ -5132,7 +5268,7 @@ int asCBuilder::RegisterScriptFunction(asCScriptNode *node, asCScriptCode *file,
 		int row = 0, col = 0;
 		if( node )
 			file->ConvertPosToRowCol(node->tokenPos, &row, &col);
-		module->AddScriptFunction(file->idx, (row&0xFFFFF)|((col&0xFFF)<<20), funcId, name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, isInterface, objType, isGlobalFunction, funcTraits, ns);
+		module->AddScriptFunction(file->idx, (row&0xFFFFF)|((col&0xFFF)<<20), funcId, name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, isInterface, isAbstract, objType, isGlobalFunction, funcTraits, ns);
 	}
 
 	// Make sure the default args are declared correctly
@@ -5188,7 +5324,7 @@ int asCBuilder::RegisterScriptFunction(asCScriptNode *node, asCScriptCode *file,
 					defaultArgs[n] = asNEW(asCString)(*defaultArgs[n]);
 
 			asCDataType dt = asCDataType::CreateObjectHandle(objType, false);
-			module->AddScriptFunction(file->idx, engine->scriptFunctions[funcId]->scriptData->declaredAt, factoryId, name, dt, parameterTypes, parameterNames, inOutFlags, defaultArgs, false, 0, false, funcTraits);
+			module->AddScriptFunction(file->idx, engine->scriptFunctions[funcId]->scriptData->declaredAt, factoryId, name, dt, parameterTypes, parameterNames, inOutFlags, defaultArgs, false, false, 0, false, funcTraits);
 
 			// If the object is shared, then the factory must also be marked as shared
 			if( objType->flags & asOBJ_SHARED )
@@ -5247,22 +5383,40 @@ int asCBuilder::RegisterVirtualProperty(asCScriptNode *node, asCScriptCode *file
 			ns = engine->nameSpaces[0];
 	}
 
-	bool isPrivate = false, isProtected = false;
+	bool isPrivate = false, isProtected = false, isSerialize = false, isAbstract = false;
 	asCString emulatedName;
 	asCDataType emulatedType;
 
 	asCScriptNode *mainNode = node;
 	node = node->firstChild;
 
-	if( !isGlobalFunction && node->tokenType == ttPrivate )
+	if( !isGlobalFunction && node->tokenType == ttIdentifier && file->TokenEquals(node->tokenPos, node->tokenLength, ABSTRACT_TOKEN) )
 	{
-		isPrivate = true;
+		isAbstract = true;
 		node = node->next;
 	}
-	else if( !isGlobalFunction && node->tokenType == ttProtected )
+
+	for( int k = 0; k < 2; k++ )
 	{
-		isProtected = true;
-		node = node->next;
+		if( !isGlobalFunction && node->tokenType == ttPrivate )
+		{
+			isPrivate = true;
+			node = node->next;
+		}
+		else if( !isGlobalFunction && node->tokenType == ttProtected )
+		{
+			isProtected = true;
+			node = node->next;
+		}
+		else if( !isGlobalFunction && node->tokenType == ttSerialize )
+		{
+				isSerialize = true;
+				node = node->next;
+		}
+		else
+		{
+			break;
+		}
 	}
 
 	emulatedType = CreateDataTypeFromNode(node, file, ns);
@@ -5290,6 +5444,7 @@ int asCBuilder::RegisterVirtualProperty(asCScriptNode *node, asCScriptCode *file
 		funcTraits.SetTrait(asTRAIT_PRIVATE, isPrivate);
 		funcTraits.SetTrait(asTRAIT_PROTECTED, isProtected);
 		funcTraits.SetTrait(asTRAIT_PROPERTY, true);
+		funcTraits.SetTrait(asTRAIT_ABSTRACT, isAbstract);
 
 		if (node->firstChild->nodeType == snIdentifier && file->TokenEquals(node->firstChild->tokenPos, node->firstChild->tokenLength, GET_TOKEN))
 			name = "get_";
@@ -5328,12 +5483,20 @@ int asCBuilder::RegisterVirtualProperty(asCScriptNode *node, asCScriptCode *file
 			if (funcNode)
 				funcNode->DisconnectParent();
 
-			if (funcNode == 0 && (objType == 0 || !objType->IsInterface()))
+			if (funcNode == 0 && (objType == 0 || !objType->IsInterface()) && !isAbstract)
 			{
 				// TODO: getset: If no implementation is supplied the builder should provide an automatically generated implementation
 				//               The compiler needs to be able to handle the different types, primitive, value type, and handle
 				//               The code is also different for global property accessors
 				WriteError(TXT_PROPERTY_ACCESSOR_MUST_BE_IMPLEMENTED, file, node);
+			}
+
+			if (isAbstract)
+			{
+				if (objType == 0 || !objType->IsAbstract())
+				{
+					WriteError(TXT_ABSTRACT_PROPERTY_MUST_BELONG_TO_ABSTRACT_CLASS, file, node);
+				}
 			}
 
 			if (name == "get_")
@@ -5357,7 +5520,7 @@ int asCBuilder::RegisterVirtualProperty(asCScriptNode *node, asCScriptCode *file
 		if( success )
 		{
 			if( !isExistingShared )
-				RegisterScriptFunction(funcNode, file, objType, isInterface, isGlobalFunction, ns, false, false, name, returnType, paramNames, paramTypes, paramModifiers, defaultArgs, funcTraits);
+				RegisterScriptFunction(funcNode, file, objType, isInterface, isAbstract, isGlobalFunction, ns, false, false, name, returnType, paramNames, paramTypes, paramModifiers, defaultArgs, funcTraits);
 			else
 			{
 				// Free the funcNode as it won't be used
@@ -6205,8 +6368,9 @@ asCDataType asCBuilder::ModifyDataTypeFromNode(const asCDataType &type, asCScrip
 			!(dt.GetTypeInfo() && (dt.GetTypeInfo()->flags & asOBJ_TEMPLATE_SUBTYPE)) )
 		{
 			// Verify that the base type support &inout parameter types
-			if( !dt.IsObject() || dt.IsObjectHandle() || 
-				!((dt.GetTypeInfo()->flags & asOBJ_NOCOUNT) || (CastToObjectType(dt.GetTypeInfo())->beh.addref && CastToObjectType(dt.GetTypeInfo())->beh.release)) )
+			if( !dt.IsPrimitive() &&
+				(!dt.IsObject() || dt.IsObjectHandle() ||
+				!((dt.GetTypeInfo()->flags & asOBJ_NOCOUNT) || (CastToObjectType(dt.GetTypeInfo())->beh.addref && CastToObjectType(dt.GetTypeInfo())->beh.release))) )
 				WriteError(TXT_ONLY_OBJECTS_MAY_USE_REF_INOUT, file, node->firstChild);
 		}
 	}

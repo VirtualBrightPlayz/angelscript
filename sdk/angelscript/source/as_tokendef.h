@@ -172,11 +172,13 @@ enum eTokenType
 	ttCast,                // cast
 	ttPrivate,             // private
 	ttProtected,           // protected
+	ttSerialize,           // serialize
 	ttNamespace,           // namespace
 	ttMixin,               // mixin
 	ttAuto,                // auto
 	ttTry,                 // try
-	ttCatch                // catch
+	ttCatch,               // catch
+	ttFunction,            // function
 };
 
 struct sTokenWord
@@ -265,6 +267,7 @@ sTokenWord const tokenWords[] =
 	asTokenDef("float"     , ttFloat),
 	asTokenDef("for"       , ttFor),
 	asTokenDef("funcdef"   , ttFuncDef),
+	asTokenDef("function"  , ttFunction),
 	asTokenDef("if"        , ttIf),
 	asTokenDef("import"    , ttImport),
 	asTokenDef("in"        , ttIn),
@@ -285,6 +288,7 @@ sTokenWord const tokenWords[] =
 	asTokenDef("private"   , ttPrivate),
 	asTokenDef("protected" , ttProtected),
 	asTokenDef("return"    , ttReturn),
+	asTokenDef("serialize" , ttSerialize),
 	asTokenDef("switch"    , ttSwitch),
 	asTokenDef("true"      , ttTrue),
 	asTokenDef("try"       , ttTry),
@@ -315,7 +319,6 @@ const char * const OVERRIDE_TOKEN  = "override";
 const char * const GET_TOKEN       = "get";
 const char * const SET_TOKEN       = "set";
 const char * const ABSTRACT_TOKEN  = "abstract";
-const char * const FUNCTION_TOKEN  = "function";
 const char * const IF_HANDLE_TOKEN = "if_handle_then_const";
 const char * const EXTERNAL_TOKEN  = "external";
 const char * const EXPLICIT_TOKEN  = "explicit";

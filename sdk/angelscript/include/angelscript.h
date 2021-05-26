@@ -153,14 +153,41 @@ enum asEEngineProp
 // Calling conventions
 enum asECallConvTypes
 {
+	// C++ function is static
+	// Resulting AngelScript function is global
+	// No auxiliary pointer required
 	asCALL_CDECL             = 0,
+
+	// Unused
 	asCALL_STDCALL           = 1,
+
+	// C++ function is not static
+	// Resulting AngelScript function is global
+	// Auxiliary pointer required
 	asCALL_THISCALL_ASGLOBAL = 2,
+	
+	// C++ function is not static
+	// Resulting AngelScript function is not global
+	// No auxiliary pointer required
 	asCALL_THISCALL          = 3,
+
+	// Same as asCALL_CDECL
+	// Auxiliary pointer is passed as last argument to the C++ function
 	asCALL_CDECL_OBJLAST     = 4,
+
+	// Same as asCALL_CDECL
+	// Auxiliary pointer is passed as first argument to the C++ function
 	asCALL_CDECL_OBJFIRST    = 5,
+
+	// Unused
 	asCALL_GENERIC           = 6,
+
+	// Same as asCALL_THISCALL
+	// Auxiliary pointer is passed as last argument to the C++ function
 	asCALL_THISCALL_OBJLAST  = 7,
+
+	// Same as asCALL_THISCALL
+	// Auxiliary pointer is passed as first argument to the C++ function
 	asCALL_THISCALL_OBJFIRST = 8
 };
 
@@ -834,7 +861,7 @@ public:
 	virtual int         GetGlobalVarIndexByName(const char *name) const = 0;
 	virtual int         GetGlobalVarIndexByDecl(const char *decl) const = 0;
 	virtual const char *GetGlobalVarDeclaration(asUINT index, bool includeNamespace = false) const = 0;
-	virtual int         GetGlobalVar(asUINT index, const char **name, const char **nameSpace = 0, int *typeId = 0, bool *isConst = 0) const = 0;
+	virtual int         GetGlobalVar(asUINT index, const char **name, const char **nameSpace = 0, int *typeId = 0, bool *isConst = 0, bool *isSerialize = 0) const = 0;
 	virtual void       *GetAddressOfGlobalVar(asUINT index) = 0;
 	virtual int         RemoveGlobalVar(asUINT index) = 0;
 
@@ -1012,6 +1039,7 @@ public:
 	virtual asUINT      GetPropertyCount() const = 0;
 	virtual int         GetPropertyTypeId(asUINT prop) const = 0;
 	virtual const char *GetPropertyName(asUINT prop) const = 0;
+	virtual bool        IsPropertySerializable(asUINT prop) const = 0;
 	virtual void       *GetAddressOfProperty(asUINT prop) = 0;
 
 	// Miscellaneous
@@ -1069,7 +1097,7 @@ public:
 
 	// Properties
 	virtual asUINT      GetPropertyCount() const = 0;
-	virtual int         GetProperty(asUINT index, const char **name, int *typeId = 0, bool *isPrivate = 0, bool *isProtected = 0, int *offset = 0, bool *isReference = 0, asDWORD *accessMask = 0, int *compositeOffset = 0, bool *isCompositeIndirect = 0) const = 0;
+	virtual int         GetProperty(asUINT index, const char **name, int *typeId = 0, bool *isPrivate = 0, bool *isProtected = 0, bool *isSerialize = 0, int *offset = 0, bool *isReference = 0, asDWORD *accessMask = 0, int *compositeOffset = 0, bool *isCompositeIndirect = 0) const = 0;
 	virtual const char *GetPropertyDeclaration(asUINT index, bool includeNamespace = false) const = 0;
 
 	// Behaviours

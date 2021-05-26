@@ -1074,6 +1074,14 @@ void asCScriptFunction::AddReferences()
 	// the variable in the function.
 	asCArray<void*> ptrs;
 
+	if( module )
+	{
+		for( asUINT i=0;i<module->m_externalPtrs.GetLength();i++ )
+		{
+			ptrs.PushLast(module->m_externalPtrs[i]);
+		}
+	}
+
 	// Only count references if there is any bytecode
 	if( scriptData && scriptData->byteCode.GetLength() )
 	{
@@ -1231,6 +1239,14 @@ void asCScriptFunction::ReleaseReferences()
 {
 	asCArray<void*> ptrs;
 
+	if( module )
+	{
+		for( asUINT i=0;i<module->m_externalPtrs.GetLength();i++ )
+		{
+			ptrs.PushLast(module->m_externalPtrs[i]);
+		}
+	}
+
 	// Only count references if there is any bytecode
 	if( scriptData && scriptData->byteCode.GetLength() )
 	{
@@ -1318,6 +1334,7 @@ void asCScriptFunction::ReleaseReferences()
 
 					if (!prop)
 					{
+						if( ptrs.Exists(gvarPtr) ) break;
 						// The pointer is a string constant, so it needs to be released by the string factory
 						int r = engine->stringFactory->ReleaseStringConstant(gvarPtr);
 						UNUSED_VAR(r);
@@ -1720,6 +1737,12 @@ bool asCScriptFunction::IsExplicit() const
 bool asCScriptFunction::IsProperty() const
 {
 	return traits.GetTrait(asTRAIT_PROPERTY);
+}
+
+// interface
+bool asCScriptFunction::IsAbstract() const
+{
+	return traits.GetTrait(asTRAIT_ABSTRACT);
 }
 
 // internal

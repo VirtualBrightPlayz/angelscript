@@ -2203,11 +2203,12 @@ void asCReader::ReadObjectProperty(asCObjectType *ot)
 	bool isPrivate = (flags & 1) ? true : false;
 	bool isProtected = (flags & 2) ? true : false;
 	bool isInherited = (flags & 4) ? true : false;
+	bool isSerialize = (flags & 8) ? true : false;
 
 	// TODO: shared: If the type is shared and pre-existing, we should just
 	//               validate that the loaded methods match the original
 	if( !existingShared.MoveTo(0, ot) )
-		ot->AddPropertyToClass(name, dt, isPrivate, isProtected, isInherited);
+		ot->AddPropertyToClass(name, dt, isPrivate, isProtected, isSerialize, isInherited);
 }
 
 void asCReader::ReadDataType(asCDataType *dt)
@@ -3276,7 +3277,7 @@ int asCReader::SListAdjuster::AdjustOffset(int offset)
 	else if( patternNode->type == asLPT_TYPE )
 	{
 		const asCDataType &dt = reinterpret_cast<asSListPatternDataTypeNode*>(patternNode)->dataType;
-		if( dt.GetTokenType() == ttQuestion )
+		if( dt.GetTokenType() == ttQuestion || dt.GetTokenType() == ttFunction )
 		{
 			if( nextTypeId != -1 )
 			{
@@ -4672,6 +4673,7 @@ void asCWriter::WriteObjectProperty(asCObjectProperty* prop)
 	if( prop->isPrivate ) flags |= 1;
 	if( prop->isProtected ) flags |= 2;
 	if( prop->isInherited ) flags |= 4;
+	if( prop->isSerialize ) flags |= 8;
 	WriteEncodedInt64(flags);
 }
 
@@ -5545,7 +5547,7 @@ int asCWriter::SListAdjuster::AdjustOffset(int offset, asCObjectType *listPatter
 	else if( patternNode->type == asLPT_TYPE )
 	{
 		const asCDataType &dt = reinterpret_cast<asSListPatternDataTypeNode*>(patternNode)->dataType;
-		if( dt.GetTokenType() == ttQuestion )
+		if( dt.GetTokenType() == ttQuestion || dt.GetTokenType() == ttFunction )
 		{
 			// The bytecode need to inform the type that will
 			// come next and then adjust that position too before
@@ -5652,8 +5654,9 @@ void asCWriter::SListAdjuster::SetRepeatCount(asUINT rc)
 void asCWriter::SListAdjuster::SetNextType(int typeId)
 {
 	// Make sure the list is expecting a type at this location
+	eTokenType tokenType = reinterpret_cast<asSListPatternDataTypeNode*>(patternNode)->dataType.GetTokenType();
 	asASSERT( patternNode->type == asLPT_TYPE &&
-	          reinterpret_cast<asSListPatternDataTypeNode*>(patternNode)->dataType.GetTokenType() == ttQuestion );
+		(tokenType == ttQuestion || tokenType == ttFunction) );
 
 	// Inform the type id for the next adjustment
 	nextTypeId = typeId;

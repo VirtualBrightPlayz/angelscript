@@ -126,7 +126,7 @@ public:
 	virtual int         GetGlobalVarIndexByName(const char *name) const;
 	virtual int         GetGlobalVarIndexByDecl(const char *decl) const;
 	virtual const char *GetGlobalVarDeclaration(asUINT index, bool includeNamespace) const;
-	virtual int         GetGlobalVar(asUINT index, const char **name, const char **nameSpace, int *typeId, bool *isConst) const;
+	virtual int         GetGlobalVar(asUINT index, const char **name, const char **nameSpace, int *typeId, bool *isConst, bool *isSerialize) const;
 	virtual void       *GetAddressOfGlobalVar(asUINT index);
 	virtual int         RemoveGlobalVar(asUINT index);
 
@@ -187,7 +187,7 @@ public:
 	void JITCompile();
 
 #ifndef AS_NO_COMPILER
-	int  AddScriptFunction(int sectionIdx, int declaredAt, int id, const asCString &name, const asCDataType &returnType, const asCArray<asCDataType> &params, const asCArray<asCString> &paramNames, const asCArray<asETypeModifiers> &inOutFlags, const asCArray<asCString *> &defaultArgs, bool isInterface, asCObjectType *objType = 0, bool isGlobalFunction = false, asSFunctionTraits funcTraits = asSFunctionTraits(), asSNameSpace *ns = 0);
+	int  AddScriptFunction(int sectionIdx, int declaredAt, int id, const asCString &name, const asCDataType &returnType, const asCArray<asCDataType> &params, const asCArray<asCString> &paramNames, const asCArray<asETypeModifiers> &inOutFlags, const asCArray<asCString *> &defaultArgs, bool isInterface, bool isAbstract, asCObjectType *objType = 0, bool isGlobalFunction = false, asSFunctionTraits funcTraits = asSFunctionTraits(), asSNameSpace *ns = 0);
 	int  AddScriptFunction(asCScriptFunction *func);
 	int  AddImportedFunction(int id, const asCString &name, const asCDataType &returnType, const asCArray<asCDataType> &params, const asCArray<asETypeModifiers> &inOutFlags, const asCArray<asCString *> &defaultArgs, asSFunctionTraits funcTraits, asSNameSpace *ns, const asCString &moduleName);
 	int  AddFuncDef(const asCString &name, asSNameSpace *ns, asCObjectType *parent);
@@ -231,6 +231,8 @@ public:
 
 	// This array holds the global variables declared in the script
 	asCSymbolTable<asCGlobalProperty> m_scriptGlobals; // increases ref count
+	asCSymbolTable<asCGlobalProperty> m_externalGlobals; // doesn't increase ref count
+	asCArray<void*>                   m_externalPtrs;
 	bool                              m_isGlobalVarInitialized;
 
 	// This array holds class and interface types

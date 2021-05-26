@@ -117,7 +117,7 @@ public:
 	asIScriptFunction *GetMethodByName(const char *name, bool getVirtual) const;
 	asIScriptFunction *GetMethodByDecl(const char *decl, bool getVirtual) const;
 	asUINT             GetPropertyCount() const;
-	int                GetProperty(asUINT index, const char **name, int *typeId, bool *isPrivate, bool *isProtected, int *offset, bool *isReference, asDWORD *accessMask, int *compositeOffset, bool *isCompositeIndirect) const;
+	int                GetProperty(asUINT index, const char **name, int *typeId, bool *isPrivate, bool *isProtected, bool *isSerialize, int *offset, bool *isReference, asDWORD *accessMask, int *compositeOffset, bool *isCompositeIndirect) const;
 	const char        *GetPropertyDeclaration(asUINT index, bool includeNamespace = false) const;
 	asUINT             GetBehaviourCount() const;
 	asIScriptFunction *GetBehaviourByIndex(asUINT index, asEBehaviours *outBehaviour) const;
@@ -132,8 +132,9 @@ public:
 	void ReleaseAllFunctions();
 
 	bool IsInterface() const;
+	bool IsAbstract() const;
 
-	asCObjectProperty *AddPropertyToClass(const asCString &name, const asCDataType &dt, bool isPrivate, bool isProtected, bool isInherited);
+	asCObjectProperty *AddPropertyToClass(const asCString &name, const asCDataType &dt, bool isPrivate, bool isProtected, bool isSerialize, bool isInherited);
 	void ReleaseAllProperties();
 
 #ifdef WIP_16BYTE_ALIGN
